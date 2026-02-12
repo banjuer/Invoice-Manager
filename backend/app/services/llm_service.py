@@ -132,6 +132,9 @@ class OpenAIProvider(BaseLLMProvider):
                     kwargs = {"api_key": settings.openai_api_key}
                     if settings.openai_base_url:
                         kwargs["base_url"] = settings.openai_base_url
+                        # Override User-Agent for custom base URLs to avoid
+                        # Cloudflare WAF blocking "OpenAI/Python" user agent
+                        kwargs["default_headers"] = {"User-Agent": "python-httpx/0.27.0"}
                     self._client = OpenAI(**kwargs)
         return self._client
 
