@@ -20,7 +20,7 @@ import {
   ApiOutlined,
   EyeOutlined,
 } from '@ant-design/icons';
-import { getLLMStatus, configureLLM, testLLMConnection, getAvailableModels } from '../services/api';
+import { getLLMStatus, configureLLM, testLLMConnection, testURLConnectivity, getAvailableModels } from '../services/api';
 import type { LLMStatusResponse, LLMProviderInfo, ModelInfo } from '../types/invoice';
 
 interface LLMConfigModalProps {
@@ -59,12 +59,10 @@ const FALLBACK_MODELS: Record<string, ModelInfo[]> = {
   ],
 };
 
-// Providers that support custom base URL
-const SUPPORTS_BASE_URL = ['openai', 'qwen', 'deepseek'];
-
 function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
+  const [testingUrl, setTestingUrl] = useState(false);
   const [configuring, setConfiguring] = useState(false);
   const [status, setStatus] = useState<LLMStatusResponse | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string>('');
@@ -125,11 +123,13 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
     await fetchModels(provider);
     // Set default model from fetched list
     const providerModels = FALLBACK_MODELS[provider] || [];
+    // Pre-populate base_url from saved config if available
+    const savedProvider = status?.available_providers.find(p => p.name === provider);
     form.setFieldsValue({
       provider,
       model: providerModels[0]?.id || '',
       api_key: '',
-      base_url: '',
+      base_url: savedProvider?.base_url || '',
       config_token: '',
     });
   };
@@ -179,6 +179,34 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
       message.error('配置失败');
     } finally {
       setConfiguring(false);
+    }
+  };
+
+  const handleTestUrl = async () => {
+    const url = form.getFieldValue('base_url');
+    if (!url?.trim()) {
+      message.warning('请先输入 API 地址');
+      return;
+    }
+    setTestingUrl(true);
+    try {
+      const result = await testURLConnectivity(url.trim());
+      if (result.success) {
+        message.success(`${result.message} (${result.response_time_ms}ms)`);
+      } else {
+        message.error(result.message);
+      }
+    } catch (error: unknown) {
+      if (error && typeof error === 'object' && 'response' in error) {
+        const axiosError = error as { response?: { data?: { detail?: string } } };
+        if (axiosError.response?.data?.detail) {
+          message.error(axiosError.response.data.detail);
+          return;
+        }
+      }
+      message.error('URL测试失败');
+    } finally {
+      setTestingUrl(false);
     }
   };
 
@@ -348,15 +376,26 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
               />
             </Form.Item>
 
-            {SUPPORTS_BASE_URL.includes(selectedProvider) && (
-              <Form.Item
-                name="base_url"
-                label="自定义 API 地址 (可选)"
-                tooltip="用于兼容OpenAI接口的其他服务"
-              >
-                <Input placeholder="例如: https://api.example.com/v1" />
-              </Form.Item>
-            )}
+            <Form.Item
+              name="base_url"
+              label="自定义 API 地址 (可选)"
+              tooltip="用于自定义API端点或代理服务"
+            >
+              <Input
+                placeholder="例如: https://api.example.com/v1"
+                addonAfter={
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={handleTestUrl}
+                    loading={testingUrl}
+                    style={{ margin: '-4px -11px', padding: '0 8px' }}
+                  >
+                    测试
+                  </Button>
+                }
+              />
+            </Form.Item>
 
             <Form.Item
               name="config_token"

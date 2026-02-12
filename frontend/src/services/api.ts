@@ -190,6 +190,14 @@ export const testLLMConnection = async (): Promise<LLMTestResponse> => {
   return response.data;
 };
 
+// Test URL connectivity (pre-save check)
+export const testURLConnectivity = async (
+  url: string
+): Promise<{ success: boolean; message: string; status_code?: number; response_time_ms?: number }> => {
+  const response = await api.post('/settings/llm/test-url', { url });
+  return response.data;
+};
+
 // Get available models for a provider
 export const getAvailableModels = async (
   provider?: string,

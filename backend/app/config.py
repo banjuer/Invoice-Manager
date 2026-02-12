@@ -19,10 +19,12 @@ class Settings(BaseSettings):
     # Anthropic (Claude)
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-3-haiku-20240307"
+    anthropic_base_url: str = ""  # Custom base URL (e.g., for proxy)
 
     # Google (Gemini)
     google_api_key: str = ""
     google_model: str = "gemini-1.5-flash"
+    google_base_url: str = ""  # Custom base URL (e.g., for proxy)
 
     # Qwen (Alibaba)
     qwen_api_key: str = ""
@@ -37,6 +39,7 @@ class Settings(BaseSettings):
     # Zhipu (GLM)
     zhipu_api_key: str = ""
     zhipu_model: str = "glm-4-flash"
+    zhipu_base_url: str = ""  # Custom base URL (e.g., for proxy)
 
     # File upload
     max_file_size: int = 10 * 1024 * 1024  # 10MB

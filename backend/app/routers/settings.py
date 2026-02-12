@@ -92,6 +92,7 @@ class LLMProviderInfo(BaseModel):
     display_name: str
     is_configured: bool
     model: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 class LLMStatusResponse(BaseModel):
@@ -156,6 +157,7 @@ async def get_llm_status():
             display_name=PROVIDER_DISPLAY_NAMES.get(name, name),
             is_configured=name in configured_providers,
             model=_get_provider_model(name) if name in configured_providers else DEFAULT_MODELS.get(name),
+            base_url=_get_provider_base_url(name) if name in configured_providers else None,
         )
         available_providers.append(provider_info)
 
@@ -199,11 +201,11 @@ async def configure_llm(
         # Provider-specific configuration
         provider_config = {
             "openai": ("OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL"),
-            "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", None),
-            "google": ("GOOGLE_API_KEY", "GOOGLE_MODEL", None),
+            "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL"),
+            "google": ("GOOGLE_API_KEY", "GOOGLE_MODEL", "GOOGLE_BASE_URL"),
             "qwen": ("QWEN_API_KEY", "QWEN_MODEL", "QWEN_BASE_URL"),
             "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_MODEL", "DEEPSEEK_BASE_URL"),
-            "zhipu": ("ZHIPU_API_KEY", "ZHIPU_MODEL", None),
+            "zhipu": ("ZHIPU_API_KEY", "ZHIPU_MODEL", "ZHIPU_BASE_URL"),
         }
 
         key_name, model_name, base_url_name = provider_config[provider]
@@ -289,6 +291,79 @@ def _get_provider_model(provider_name: str) -> Optional[str]:
         "zhipu": settings.zhipu_model,
     }
     return model_map.get(provider_name)
+
+
+def _get_provider_base_url(provider_name: str) -> Optional[str]:
+    """Get the configured base URL for a provider."""
+    settings = get_settings()
+    url_map = {
+        "openai": settings.openai_base_url,
+        "anthropic": settings.anthropic_base_url,
+        "google": settings.google_base_url,
+        "qwen": settings.qwen_base_url,
+        "deepseek": settings.deepseek_base_url,
+        "zhipu": settings.zhipu_base_url,
+    }
+    return url_map.get(provider_name) or None
+
+
+class URLTestRequest(BaseModel):
+    """Request to test URL connectivity."""
+    url: str
+
+
+class URLTestResponse(BaseModel):
+    """Response for URL connectivity test."""
+    success: bool
+    message: str
+    status_code: Optional[int] = None
+    response_time_ms: Optional[int] = None
+
+
+@router.post("/llm/test-url", response_model=URLTestResponse)
+async def test_url_connectivity(request: URLTestRequest):
+    """Test if a URL endpoint is reachable (pre-save connectivity check)."""
+    import httpx
+    import time
+
+    url = request.url.strip().rstrip("/")
+    if not url:
+        raise HTTPException(status_code=400, detail="URL不能为空")
+
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL必须以 http:// 或 https:// 开头")
+
+    try:
+        start = time.monotonic()
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            try:
+                response = await client.head(url)
+            except httpx.HTTPStatusError:
+                response = await client.get(url)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        return URLTestResponse(
+            success=True,
+            message=f"URL可达，状态码: {response.status_code}",
+            status_code=response.status_code,
+            response_time_ms=elapsed_ms,
+        )
+    except httpx.ConnectError:
+        return URLTestResponse(
+            success=False,
+            message="无法连接到该地址，请检查URL是否正确",
+        )
+    except httpx.TimeoutException:
+        return URLTestResponse(
+            success=False,
+            message="连接超时，请检查URL是否正确或网络是否通畅",
+        )
+    except Exception as e:
+        logger.error(f"URL connectivity test failed: {e}")
+        return URLTestResponse(
+            success=False,
+            message=f"连接测试失败: {str(e)}",
+        )
 
 
 class ModelInfo(BaseModel):

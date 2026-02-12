@@ -120,6 +120,7 @@ export interface LLMProviderInfo {
   display_name: string;
   is_configured: boolean;
   model: string | null;
+  base_url: string | null;
 }
 
 export interface LLMStatusResponse {
