@@ -67,6 +67,7 @@ function Start-Services {
     New-Item -ItemType Directory -Force -Path "uploads" | Out-Null
 
     Write-Info "Building and starting services..."
+    $env:DOCKER_BUILDKIT = "1"
     docker compose up -d --build
 
     Write-Info "Waiting for backend to be ready..."

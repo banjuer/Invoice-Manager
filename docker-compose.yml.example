@@ -23,6 +23,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     container_name: invoice_backend
     restart: unless-stopped
     env_file:

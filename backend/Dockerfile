@@ -2,9 +2,8 @@ FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Install system dependencies for PaddleOCR with retry
-RUN for i in 1 2 3 4 5; do \
-    apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies for PaddleOCR
+RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         libglib2.0-0 \
         libgl1 \
@@ -12,13 +11,17 @@ RUN for i in 1 2 3 4 5; do \
         libxext6 \
         libxrender1 \
         poppler-utils \
-    && rm -rf /var/lib/apt/lists/* \
-    && break || sleep 15; \
-    done
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Install Python dependencies with BuildKit cache
+# PIP_INDEX_URL defaults to Tsinghua mirror (faster inside China); override via build arg
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_INDEX_URL=$PIP_INDEX_URL
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# BuildKit cache mount avoids re-downloading unchanged deps
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Copy application
 COPY . .

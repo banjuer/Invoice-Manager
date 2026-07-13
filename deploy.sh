@@ -75,7 +75,7 @@ start_services() {
   mkdir -p uploads
 
   info "Building and starting services..."
-  docker compose up -d --build
+  DOCKER_BUILDKIT=1 docker compose up -d --build
 
   info "Waiting for services to be ready..."
   local max_wait=60
