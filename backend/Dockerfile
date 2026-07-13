@@ -3,11 +3,10 @@ FROM python:3.11-slim-bookworm
 WORKDIR /app
 
 # Optional APT mirror (uncomment DEBIAN_MIRROR in .env for faster downloads in China)
-# 00- prefix ensures mirror takes priority; default debian.sources stays as fallback
 ARG DEBIAN_MIRROR
 RUN if [ -n "$DEBIAN_MIRROR" ]; then \
-        printf "Types: deb\nURIs: ${DEBIAN_MIRROR}/debian\nSuites: bookworm bookworm-updates\nComponents: main\n" > /etc/apt/sources.list.d/00-mirror.sources \
-        && printf "Types: deb\nURIs: ${DEBIAN_MIRROR}/debian-security\nSuites: bookworm-security\nComponents: main\n" >> /etc/apt/sources.list.d/00-mirror.sources ; \
+        sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+        && sed -i "s|http://security.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources ; \
     fi
 
 # Install system dependencies for PaddleOCR
