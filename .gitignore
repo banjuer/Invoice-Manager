@@ -66,7 +66,8 @@ build/
 *~
 .DS_Store
 
-# Docker
+# Docker (keep .example as template, ignore personal config)
+docker-compose.yml
 *.log
 
 # Testing
@@ -78,6 +79,9 @@ coverage/
 *.backup
 *.tmp
 *.temp
+
+# Uploads
+uploads/
 
 attachments/
 runs/

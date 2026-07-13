@@ -254,9 +254,12 @@ class FieldExtractor:
         'seller_name': None,  # Extracted specially
         'seller_tax_id': None,  # Extracted specially
         # Match items with * markers in Chinese invoices
-        # Format is typically *类别*商品名称, we want to capture "类别*商品名称"
-        # Example: *家具*办公椅 → captures "家具*办公椅"
-        'item_name': r'\*([^*\n]+(?:\*[^*\n]+)*)',
+        # Format is *category*item_name [qty] [price] [amount] [tax_rate] [tax_amount]
+        # Stop at digits (amount/tax_rate) or tax-exempt keywords to avoid non-name columns
+        # Example: *家具*办公椅 → "*家具*办公椅"
+        # Example: *信息技术服务*技术服务费 6% 10.00 → "*信息技术服务*技术服务费"
+        # Example: *邮政服务*快递费 免税 88.00 → "*邮政服务*快递费"
+        'item_name': r'(\*[^*]+?\*[^*]+?)(?=\s+\d|\s*免税|\s*不征税|\s*零税率|$)',
         'total_with_tax': r'(?:小写|价税合计)[）)（(]*\s*[¥￥]\s*([\d,.]+)',
         'amount': r'(?:合\s*计|金\s*额)\s*[¥￥]?\s*([\d,.]+)',
         'tax_amount': r'(?:税\s*额\s*[¥￥]?\s*([\d,.]+)|[¥￥]\s*[\d,.]+\s*[¥￥]\s*([\d,.]+))',

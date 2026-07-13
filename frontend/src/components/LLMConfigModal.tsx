@@ -80,6 +80,25 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
         setSelectedProvider(data.active_provider);
         // Fetch models for the active provider
         await fetchModels(data.active_provider);
+        // Populate form with saved config (except api_key for security)
+        const savedProvider = data.available_providers.find(p => p.name === data.active_provider);
+        if (savedProvider?.is_configured) {
+          form.setFieldsValue({
+            provider: data.active_provider,
+            api_key: '', // Never echo API key back
+            model: savedProvider.model || '',
+            base_url: savedProvider.base_url || '',
+            config_token: '',
+          });
+        } else {
+          form.setFieldsValue({
+            provider: data.active_provider,
+            api_key: '',
+            model: '',
+            base_url: '',
+            config_token: '',
+          });
+        }
       }
     } catch (error) {
       console.error('Failed to fetch LLM status:', error);
@@ -112,8 +131,8 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
 
   useEffect(() => {
     if (open) {
-      fetchStatus();
       form.resetFields();
+      fetchStatus();
     }
   }, [open]);
 
@@ -121,17 +140,28 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
     setSelectedProvider(provider);
     // Fetch models for the new provider
     await fetchModels(provider);
-    // Set default model from fetched list
-    const providerModels = FALLBACK_MODELS[provider] || [];
-    // Pre-populate base_url from saved config if available
+    // Check if this provider is already configured
     const savedProvider = status?.available_providers.find(p => p.name === provider);
-    form.setFieldsValue({
-      provider,
-      model: providerModels[0]?.id || '',
-      api_key: '',
-      base_url: savedProvider?.base_url || '',
-      config_token: '',
-    });
+    if (savedProvider?.is_configured) {
+      // Restore saved model and base_url for already-configured provider
+      form.setFieldsValue({
+        provider,
+        model: savedProvider.model || '',
+        api_key: '', // Never echo API key back
+        base_url: savedProvider.base_url || '',
+        config_token: '',
+      });
+    } else {
+      // New provider: use fallback default model
+      const providerModels = FALLBACK_MODELS[provider] || [];
+      form.setFieldsValue({
+        provider,
+        model: providerModels[0]?.id || '',
+        api_key: '',
+        base_url: savedProvider?.base_url || '',
+        config_token: '',
+      });
+    }
   };
 
   // Update form model when models are fetched (only if empty)
@@ -319,10 +349,19 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
             <Form.Item
               name="api_key"
               label="API 密钥"
-              rules={[{ required: true, message: '请输入API密钥' }]}
+              rules={[
+                {
+                  required: !selectedProvider || !status?.configured_providers.includes(selectedProvider),
+                  message: '请输入API密钥',
+                },
+              ]}
             >
               <Input.Password
-                placeholder="输入API密钥"
+                placeholder={
+                  selectedProvider && status?.configured_providers.includes(selectedProvider)
+                    ? '已配置（输入新密钥将替换）'
+                    : '输入API密钥'
+                }
                 prefix={<ApiOutlined />}
               />
             </Form.Item>
@@ -363,9 +402,21 @@ function LLMConfigModal({ open, onClose, onConfigured }: LLMConfigModalProps) {
             <Form.Item
               name="base_url"
               label="自定义 API 地址 (可选)"
-              tooltip="用于自定义API端点或代理服务"
+              tooltip={
+                <div style={{ maxWidth: 320 }}>
+                  <p>官方 API 无需填写，使用代理时填写代理地址。</p>
+                  <p style={{ marginBottom: 4 }}><strong>格式说明：</strong></p>
+                  <ul style={{ margin: 0, paddingLeft: 16 }}>
+                    <li>OpenAI 官方：<code>https://api.openai.com/v1</code></li>
+                    <li>DeepSeek 官方：<code>https://api.deepseek.com</code></li>
+                    <li>New API/One API 代理：<code>https://your-proxy.com/v1</code></li>
+                    <li>部分代理自带 /v1 路由则无需加</li>
+                    <li>不确定时先用带 /v1 的地址测试</li>
+                  </ul>
+                </div>
+              }
             >
-              <Input placeholder="例如: https://api.example.com/v1" />
+              <Input placeholder="留空使用官方地址，或输入代理地址如: https://your-proxy.com/v1" />
             </Form.Item>
 
             <Form.Item

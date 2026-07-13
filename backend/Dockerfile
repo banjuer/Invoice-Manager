@@ -25,4 +25,4 @@ COPY . .
 
 EXPOSE 18080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "18080", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "18080"]

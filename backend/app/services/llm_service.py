@@ -567,8 +567,10 @@ class LLMService:
             return {}
 
         if not provider.supports_vision():
-            logger.warning(f"Provider {provider.get_provider_name()} does not support vision")
-            return {}
+            if not settings.llm_force_vision:
+                logger.warning(f"Provider {provider.get_provider_name()} does not support vision")
+                return {}
+            logger.info(f"Vision forced for provider {provider.get_provider_name()} (model: {settings.openai_model})")
 
         try:
             content = provider.vision_completion(
@@ -585,6 +587,37 @@ class LLMService:
             return {}
         except Exception as e:
             logger.error(f"LLM vision parsing failed ({provider.get_provider_name()}): {e}")
+            return {}
+
+    def parse_invoice_from_text(self, ocr_text: str) -> Dict[str, Any]:
+        """Parse invoice from OCR text using LLM (fallback when vision unavailable).
+
+        Args:
+            ocr_text: Raw OCR text extracted from the invoice
+
+        Returns:
+            Dictionary of extracted fields
+        """
+        if not self.is_available:
+            logger.warning("No LLM provider configured, skipping text parsing")
+            return {}
+
+        provider = self.active_provider
+        if not provider:
+            logger.warning("Failed to get active LLM provider")
+            return {}
+
+        from app.services.prompts import INVOICE_TEXT_SYSTEM_PROMPT, INVOICE_TEXT_PROMPT
+        prompt = INVOICE_TEXT_PROMPT.replace("{ocr_text}", ocr_text)
+
+        try:
+            content = provider.chat_completion(INVOICE_TEXT_SYSTEM_PROMPT, prompt)
+            return self._parse_json_response(content, provider.get_provider_name())
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM text response as JSON: {e}")
+            return {}
+        except Exception as e:
+            logger.error(f"LLM text parsing failed ({provider.get_provider_name()}): {e}")
             return {}
 
     def _normalize_field_value(self, field_name: str, value: Any) -> Optional[str]:

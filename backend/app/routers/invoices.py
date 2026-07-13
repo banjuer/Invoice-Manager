@@ -1,3 +1,5 @@
+import os
+import logging
 from typing import Optional, List
 from io import BytesIO
 from datetime import date
@@ -8,6 +10,8 @@ from sqlalchemy import select, func
 from decimal import Decimal
 
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 from app.models.invoice import Invoice, OcrResult, LlmResult, ParsingDiff, InvoiceStatus
 from app.schemas.invoice import (
     InvoiceResponse, InvoiceListResponse, InvoiceDetailResponse,
@@ -95,6 +99,17 @@ async def upload_invoices(
         )
         db.add(invoice)
         await db.flush()
+
+        # Also save to filesystem for external access/backup
+        try:
+            upload_path = os.path.join(settings.upload_dir, str(invoice.id))
+            os.makedirs(upload_path, exist_ok=True)
+            disk_path = os.path.join(upload_path, file.filename or f"invoice_{invoice.id}.{ext}")
+            with open(disk_path, "wb") as f:
+                f.write(content)
+            logger.info(f"Saved uploaded file to disk: {disk_path}")
+        except OSError as e:
+            logger.warning(f"Failed to save file to disk (DB copy preserved): {e}")
 
         invoice_ids_to_process.append(invoice.id)
 
@@ -303,6 +318,26 @@ async def get_statistics(
     )
 
 
+@router.get("/by-number/{invoice_number:path}", response_model=InvoiceDetailResponse)
+async def get_invoice_by_number(
+    invoice_number: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """通过发票号码获取发票详情"""
+    # URL decode the invoice number
+    from urllib.parse import unquote
+    number = unquote(invoice_number)
+
+    query = select(Invoice).where(Invoice.invoice_number == number).order_by(Invoice.id.desc())
+    result = await db.execute(query)
+    invoice = result.scalars().first()
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail=f"发票号码 {number} 不存在")
+
+    return await _build_invoice_detail(invoice.id, db)
+
+
 @router.get("/{invoice_id}", response_model=InvoiceDetailResponse)
 async def get_invoice(
     invoice_id: int,
@@ -313,6 +348,18 @@ async def get_invoice(
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
+    if not invoice:
+        raise HTTPException(status_code=404, detail="发票不存在")
+
+    return await _build_invoice_detail(invoice_id, db)
+
+
+async def _build_invoice_detail(invoice_id: int, db: AsyncSession):
+    """Build invoice detail response from invoice_id (shared helper)."""
+    # Load invoice
+    inv_query = select(Invoice).where(Invoice.id == invoice_id)
+    inv_result = await db.execute(inv_query)
+    invoice = inv_result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="发票不存在")
 
@@ -328,6 +375,41 @@ async def get_invoice(
     diff_query = select(ParsingDiff).where(ParsingDiff.invoice_id == invoice_id)
     diff_result = await db.execute(diff_query)
     diffs = diff_result.scalars().all()
+
+    # Build field_sources map from parsing_diffs
+    field_sources: dict[str, Optional[str]] = {}
+    for diff in diffs:
+        if diff.resolved:
+            # Resolved diff: source reflects the user's choice
+            field_sources[diff.field_name] = diff.source
+        else:
+            # Unresolved diff: show conflict if both values differ, otherwise the single source
+            if diff.source == 'conflict':
+                field_sources[diff.field_name] = 'conflict'
+            elif diff.ocr_value and not diff.llm_value:
+                field_sources[diff.field_name] = 'ocr'
+            elif diff.llm_value and not diff.ocr_value:
+                field_sources[diff.field_name] = 'llm'
+            elif diff.source == 'matched':
+                field_sources[diff.field_name] = 'matched'
+            else:
+                field_sources[diff.field_name] = diff.source
+    # Mark fields that have values but no diff record as 'manual' (user-edited)
+    # Check all invoice fields against diffs
+    invoice_fields = [
+        'invoice_number', 'issue_date', 'buyer_name', 'buyer_tax_id',
+        'seller_name', 'seller_tax_id', 'item_name', 'total_with_tax',
+        'specification', 'unit', 'quantity', 'unit_price',
+        'amount', 'tax_rate', 'tax_amount',
+    ]
+    for f in invoice_fields:
+        if f not in field_sources and getattr(invoice, f) is not None:
+            # No diff record exists. If OCR-only (no LLM), source is 'ocr'.
+            # Otherwise it was likely manually edited.
+            if ocr and not llm:
+                field_sources[f] = 'ocr'
+            else:
+                field_sources[f] = 'manual'
 
     # Build response dict from invoice to avoid lazy loading issues
     invoice_dict = {
@@ -356,6 +438,7 @@ async def get_invoice(
         "ocr_result": ocr,
         "llm_result": llm,
         "parsing_diffs": list(diffs),
+        "field_sources": field_sources,
     }
 
     return InvoiceDetailResponse.model_validate(invoice_dict)
@@ -364,6 +447,7 @@ async def get_invoice(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: int,
+    inline: bool = False,
     db: AsyncSession = Depends(get_db)
 ):
     """获取发票原始文件"""
@@ -386,11 +470,12 @@ async def get_invoice_file(
 
     # URL-encode filename for Content-Disposition header (RFC 5987)
     encoded_filename = quote(invoice.file_name)
+    disposition = "inline" if inline else "attachment"
 
     return Response(
         content=invoice.file_data,
         media_type=content_type_map.get(invoice.file_type, "application/octet-stream"),
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded_filename}"}
     )
 
 
@@ -610,6 +695,36 @@ async def batch_reprocess_invoices(
         "message": f"已清除 {len(invoices)} 张发票的旧解析结果，正在重新解析",
         "count": len(invoices)
     }
+
+
+@router.post("/{invoice_id}/reprocess-ocr")
+async def reprocess_ocr(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """重新运行OCR解析，保留现有LLM结果，重新比对"""
+    from app.services.invoice_service import reprocess_ocr_only as do_reprocess_ocr
+
+    success = await do_reprocess_ocr(invoice_id, db)
+    if success:
+        return {"message": "OCR重新解析完成", "invoice_id": invoice_id}
+    else:
+        raise HTTPException(status_code=500, detail="OCR重新解析失败")
+
+
+@router.post("/{invoice_id}/reprocess-llm")
+async def reprocess_llm(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """重新运行LLM解析，保留现有OCR结果，重新比对"""
+    from app.services.invoice_service import reprocess_llm_only as do_reprocess_llm
+
+    success = await do_reprocess_llm(invoice_id, db)
+    if success:
+        return {"message": "LLM重新解析完成", "invoice_id": invoice_id}
+    else:
+        raise HTTPException(status_code=500, detail="LLM重新解析失败")
 
 
 @router.post("/{invoice_id}/process")

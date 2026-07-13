@@ -61,9 +61,20 @@ export const getInvoice = async (id: number): Promise<InvoiceDetail> => {
   return response.data;
 };
 
-// Get invoice file URL
+// Get invoice detail by invoice number
+export const getInvoiceByNumber = async (number: string): Promise<InvoiceDetail> => {
+  const response = await api.get(`/invoices/by-number/${encodeURIComponent(number)}`);
+  return response.data;
+};
+
+// Get invoice file URL (download)
 export const getInvoiceFileUrl = (id: number): string => {
   return `/api/invoices/${id}/file`;
+};
+
+// Get invoice file URL (inline preview)
+export const getInvoiceFilePreviewUrl = (id: number): string => {
+  return `/api/invoices/${id}/file?inline=true`;
 };
 
 // Update invoice
@@ -152,6 +163,22 @@ export const reprocessInvoice = async (
   invoiceId: number
 ): Promise<{ message: string; invoice_id: number }> => {
   const response = await api.post(`/invoices/${invoiceId}/process`);
+  return response.data;
+};
+
+// Re-run OCR only, keep existing LLM
+export const reprocessOcr = async (
+  invoiceId: number
+): Promise<{ message: string; invoice_id: number }> => {
+  const response = await api.post(`/invoices/${invoiceId}/reprocess-ocr`);
+  return response.data;
+};
+
+// Re-run LLM only, keep existing OCR
+export const reprocessLlm = async (
+  invoiceId: number
+): Promise<{ message: string; invoice_id: number }> => {
+  const response = await api.post(`/invoices/${invoiceId}/reprocess-llm`);
   return response.data;
 };
 

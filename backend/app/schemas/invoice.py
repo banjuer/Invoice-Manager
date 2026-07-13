@@ -129,6 +129,9 @@ class InvoiceDetailResponse(InvoiceResponse):
     ocr_result: Optional[OcrResultResponse] = None
     llm_result: Optional[LlmResultResponse] = None
     parsing_diffs: List[ParsingDiffResponse] = []
+    field_sources: dict[str, Optional[str]] = {}
+    """Map of field_name -> source (ocr/llm/matched/conflict/manual/custom).
+    null means source unknown (e.g., value was manually edited)."""
 
 
 class BatchUpdateRequest(BaseModel):

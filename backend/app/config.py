@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # LLM Provider Configuration
     # Supported providers: openai, anthropic, google, qwen, deepseek, zhipu
     llm_provider: str = ""  # Active provider (empty = not configured)
+    llm_force_vision: bool = False  # Force vision mode regardless of model name detection
 
     # OpenAI
     openai_api_key: str = ""
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     # File upload
     max_file_size: int = 10 * 1024 * 1024  # 10MB
     allowed_extensions: list[str] = ["pdf", "jpg", "jpeg", "png"]
+    upload_dir: str = "./uploads"  # Local filesystem storage for uploaded files (Docker volume mount)
 
     # Parallel processing settings
     # Separate pools for OCR and LLM to maximize throughput
@@ -55,7 +57,7 @@ class Settings(BaseSettings):
     # App
     debug: bool = True
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="allow")
 
     def get_active_llm_provider(self) -> Optional[str]:
         """Get the active LLM provider based on configuration."""

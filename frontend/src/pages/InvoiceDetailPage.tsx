@@ -17,11 +17,13 @@ import {
   EditOutlined,
   SaveOutlined,
   SyncOutlined,
+  ScanOutlined,
+  RobotOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   DownloadOutlined,
 } from '@ant-design/icons';
-import { getInvoice, getInvoiceFileUrl, updateInvoice, resolveDiff, confirmInvoice, reprocessInvoice } from '../services/api';
+import { getInvoice, getInvoiceByNumber, getInvoiceFileUrl, getInvoiceFilePreviewUrl, updateInvoice, resolveDiff, confirmInvoice, reprocessInvoice, reprocessOcr, reprocessLlm } from '../services/api';
 import type { InvoiceDetail } from '../types/invoice';
 import { InvoiceStatus } from '../types/invoice';
 import StatusTag from '../components/StatusTag';
@@ -46,10 +48,12 @@ const fieldLabels: Record<string, string> = {
 };
 
 function InvoiceDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, number } = useParams<{ id?: string; number?: string }>();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessingOcr, setReprocessingOcr] = useState(false);
+  const [reprocessingLlm, setReprocessingLlm] = useState(false);
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [form] = Form.useForm();
@@ -62,11 +66,18 @@ function InvoiceDetailPage() {
   const [customValue, setCustomValue] = useState('');
 
   const fetchInvoice = async () => {
-    if (!id) return;
-
     setLoading(true);
     try {
-      const data = await getInvoice(parseInt(id));
+      let data: InvoiceDetail;
+      if (number) {
+        // Open by invoice number
+        data = await getInvoiceByNumber(number);
+      } else if (id) {
+        // Open by database ID
+        data = await getInvoice(parseInt(id));
+      } else {
+        return;
+      }
       setInvoice(data);
       form.setFieldsValue(data);
     } catch (error) {
@@ -79,7 +90,7 @@ function InvoiceDetailPage() {
 
   useEffect(() => {
     fetchInvoice();
-  }, [id]);
+  }, [id, number]);
 
   const handleSave = async () => {
     if (!id || !invoice) return;
@@ -173,6 +184,50 @@ function InvoiceDetailPage() {
     }
   };
 
+  const handleReprocessOcr = async () => {
+    if (!id) return;
+    setReprocessingOcr(true);
+    try {
+      await reprocessOcr(parseInt(id));
+      message.success('OCR 重新解析完成');
+      await fetchInvoice();
+    } catch (error) {
+      message.error('OCR 重新解析失败');
+    } finally {
+      setReprocessingOcr(false);
+    }
+  };
+
+  const handleReprocessLlm = async () => {
+    if (!id) return;
+    setReprocessingLlm(true);
+    try {
+      await reprocessLlm(parseInt(id));
+      message.success('LLM 重新解析完成');
+      await fetchInvoice();
+    } catch (error) {
+      message.error('LLM 重新解析失败');
+    } finally {
+      setReprocessingLlm(false);
+    }
+  };
+
+  /** 根据 source 返回来源标签的显示文本和颜色样式 */
+  const getSourceTag = (fieldName: string): { text: string; color: string } | null => {
+    if (!invoice?.field_sources) return null;
+    const source = invoice.field_sources[fieldName];
+    if (!source) return null;
+    const map: Record<string, { text: string; color: string }> = {
+      ocr: { text: 'OCR', color: '#3b82f6' },
+      llm: { text: 'LLM', color: '#8b5cf6' },
+      matched: { text: 'OCR+LLM', color: '#10b981' },
+      conflict: { text: '冲突', color: '#ef4444' },
+      manual: { text: '人工', color: '#6b7280' },
+      custom: { text: '自定义', color: '#f59e0b' },
+    };
+    return map[source] || null;
+  };
+
   const handleCustomValueSubmit = async () => {
     if (customValueModal.diffId) {
       await handleResolveDiff(customValueModal.diffId, 'custom', customValue);
@@ -206,10 +261,12 @@ function InvoiceDetailPage() {
       {/* Page Header */}
       <div className={styles.pageHeader}>
         <div className={styles.headerLeft}>
-          <button className={styles.backButton} onClick={() => navigate('/')}>
-            <ArrowLeftOutlined />
-            返回列表
-          </button>
+          {!number && (
+            <button className={styles.backButton} onClick={() => navigate('/')}>
+              <ArrowLeftOutlined />
+              返回列表
+            </button>
+          )}
           <div className={styles.headerTitle}>
             <div className={styles.invoiceNumber}>
               {invoice.invoice_number || '发票详情'}
@@ -329,56 +386,33 @@ function InvoiceDetailPage() {
                   </Row>
                 </Form>
               ) : (
-                <Descriptions column={2} bordered size="small">
-                  <Descriptions.Item label="发票号码">
-                    {invoice.invoice_number || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="开票日期">
-                    {invoice.issue_date || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="购买方名称">
-                    {invoice.buyer_name || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="购买方纳税人识别号">
-                    {invoice.buyer_tax_id || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="销售方名称">
-                    {invoice.seller_name || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="销售方纳税人识别号">
-                    {invoice.seller_tax_id || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="项目名称" span={2}>
-                    {invoice.item_name || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="规格型号">
-                    {invoice.specification || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="单位">
-                    {invoice.unit || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="数量">
-                    {invoice.quantity != null ? invoice.quantity : '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="单价">
-                    {invoice.unit_price != null ? invoice.unit_price : '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="金额">
-                    {invoice.amount != null ? `¥${Number(invoice.amount).toFixed(2)}` : '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="税率">
-                    {invoice.tax_rate || '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="税额">
-                    {invoice.tax_amount != null ? `¥${Number(invoice.tax_amount).toFixed(2)}` : '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="价税合计">
-                    {invoice.total_with_tax != null ? `¥${Number(invoice.total_with_tax).toFixed(2)}` : '-'}
-                  </Descriptions.Item>
-                  <Descriptions.Item label="归属人">
-                    {invoice.owner || '-'}
-                  </Descriptions.Item>
-                </Descriptions>
+                <>
+                {(() => {
+                  const fields: Array<{ key: string; label: string; value: React.ReactNode; span?: number }> = [];
+                  const s = (k: string) => getSourceTag(k);
+                  fields.push({ key: 'invoice_number', label: '发票号码', value: <>{invoice.invoice_number || '-'}{s('invoice_number') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('invoice_number')!.color + '18', color: s('invoice_number')!.color, fontWeight: 600 }}>{s('invoice_number')!.text}</span>}</> });
+                  fields.push({ key: 'issue_date', label: '开票日期', value: <>{invoice.issue_date || '-'}{s('issue_date') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('issue_date')!.color + '18', color: s('issue_date')!.color, fontWeight: 600 }}>{s('issue_date')!.text}</span>}</> });
+                  fields.push({ key: 'buyer_name', label: '购买方名称', value: <>{invoice.buyer_name || '-'}{s('buyer_name') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('buyer_name')!.color + '18', color: s('buyer_name')!.color, fontWeight: 600 }}>{s('buyer_name')!.text}</span>}</> });
+                  fields.push({ key: 'buyer_tax_id', label: '购买方纳税人识别号', value: <>{invoice.buyer_tax_id || '-'}{s('buyer_tax_id') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('buyer_tax_id')!.color + '18', color: s('buyer_tax_id')!.color, fontWeight: 600 }}>{s('buyer_tax_id')!.text}</span>}</> });
+                  fields.push({ key: 'seller_name', label: '销售方名称', value: <>{invoice.seller_name || '-'}{s('seller_name') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('seller_name')!.color + '18', color: s('seller_name')!.color, fontWeight: 600 }}>{s('seller_name')!.text}</span>}</> });
+                  fields.push({ key: 'seller_tax_id', label: '销售方纳税人识别号', value: <>{invoice.seller_tax_id || '-'}{s('seller_tax_id') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('seller_tax_id')!.color + '18', color: s('seller_tax_id')!.color, fontWeight: 600 }}>{s('seller_tax_id')!.text}</span>}</> });
+                  fields.push({ key: 'item_name', label: '项目名称', span: 2, value: <>{invoice.item_name || '-'}{s('item_name') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('item_name')!.color + '18', color: s('item_name')!.color, fontWeight: 600 }}>{s('item_name')!.text}</span>}</> });
+                  fields.push({ key: 'amount', label: '金额', value: <>{invoice.amount != null ? `¥${Number(invoice.amount).toFixed(2)}` : '-'}{s('amount') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('amount')!.color + '18', color: s('amount')!.color, fontWeight: 600 }}>{s('amount')!.text}</span>}</> });
+                  fields.push({ key: 'tax_rate', label: '税率', value: <>{invoice.tax_rate || '-'}{s('tax_rate') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('tax_rate')!.color + '18', color: s('tax_rate')!.color, fontWeight: 600 }}>{s('tax_rate')!.text}</span>}</> });
+                  fields.push({ key: 'tax_amount', label: '税额', value: <>{invoice.tax_amount != null ? `¥${Number(invoice.tax_amount).toFixed(2)}` : '-'}{s('tax_amount') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('tax_amount')!.color + '18', color: s('tax_amount')!.color, fontWeight: 600 }}>{s('tax_amount')!.text}</span>}</> });
+                  fields.push({ key: 'total_with_tax', label: '价税合计', value: <>{invoice.total_with_tax != null ? `¥${Number(invoice.total_with_tax).toFixed(2)}` : '-'}{s('total_with_tax') && <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 4, background: s('total_with_tax')!.color + '18', color: s('total_with_tax')!.color, fontWeight: 600 }}>{s('total_with_tax')!.text}</span>}</> });
+                  fields.push({ key: 'owner', label: '归属人', value: invoice.owner || '-' });
+                  return (
+                    <Descriptions column={2} bordered size="small">
+                      {fields.map(f => (
+                        <Descriptions.Item key={f.key} label={f.label} span={f.span || 1}>
+                          {f.value}
+                        </Descriptions.Item>
+                      ))}
+                    </Descriptions>
+                  );
+                })()}
+                </>
               )}
             </div>
           </div>
@@ -406,17 +440,33 @@ function InvoiceDetailPage() {
               </div>
               <div className={styles.cardActions}>
                 <Button
+                  icon={<ScanOutlined spin={reprocessingOcr} />}
+                  onClick={handleReprocessOcr}
+                  loading={reprocessingOcr}
+                  size="small"
+                >
+                  重新OCR
+                </Button>
+                <Button
+                  icon={<RobotOutlined spin={reprocessingLlm} />}
+                  onClick={handleReprocessLlm}
+                  loading={reprocessingLlm}
+                  size="small"
+                >
+                  重新LLM
+                </Button>
+                <Button
                   icon={<SyncOutlined spin={reprocessing} />}
                   onClick={handleReprocess}
                   loading={reprocessing}
                   size="small"
                 >
-                  重新解析
+                  全部重解析
                 </Button>
               </div>
             </div>
 
-            <Spin spinning={reprocessing} tip="正在重新解析...">
+            <Spin spinning={reprocessing || reprocessingOcr || reprocessingLlm} tip="正在重新解析...">
               {hasLlm && hasDiffs && (
                 <div className={styles.comparisonHeader}>
                   <span className={styles.matchStatus}>
@@ -561,13 +611,13 @@ function InvoiceDetailPage() {
               <div className={styles.previewContent}>
                 {invoice.file_type === 'pdf' ? (
                   <iframe
-                    src={getInvoiceFileUrl(invoice.id)}
+                    src={getInvoiceFilePreviewUrl(invoice.id)}
                     style={{ width: '100%', height: 600, border: 'none' }}
                     title="PDF Preview"
                   />
                 ) : (
                   <img
-                    src={getInvoiceFileUrl(invoice.id)}
+                    src={getInvoiceFilePreviewUrl(invoice.id)}
                     alt="Invoice"
                     style={{ width: '100%', maxHeight: 600, objectFit: 'contain' }}
                   />

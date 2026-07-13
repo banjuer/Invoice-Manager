@@ -37,6 +37,10 @@ COMPARABLE_FIELDS = [
     'tax_rate',
 ]
 
+# Fields where LLM result is preferred over OCR when they differ
+# e.g. item_name: OCR often misreads characters, LLM has context awareness
+LLM_PREFERRED_FIELDS = {'item_name'}
+
 
 def _reset_extracted_fields(invoice: Invoice) -> None:
     """Reset extracted fields to avoid stale values on reprocess."""
@@ -78,7 +82,9 @@ def _run_llm_vision(file_data: bytes, file_type: str) -> Dict[str, Any]:
     """
     llm_service = get_llm_service()
 
-    if not llm_service.is_available or not llm_service.supports_vision():
+    if not llm_service.is_available:
+        return {}
+    if not llm_service.supports_vision() and not settings.llm_force_vision:
         return {}
 
     # Determine MIME type
@@ -114,6 +120,29 @@ def _run_llm_vision(file_data: bytes, file_type: str) -> Dict[str, Any]:
             return {}
 
     return llm_service.parse_invoice_from_image(file_data, mime_type)
+
+
+def _run_llm_text(ocr_text: str) -> Dict[str, Any]:
+    """Run LLM text-based parsing using OCR output.
+
+    This is the fallback when vision is not supported by the model.
+    Sends the OCR raw text to the LLM for structured extraction.
+
+    Args:
+        ocr_text: Raw OCR text from the invoice
+
+    Returns:
+        Dictionary of extracted fields
+    """
+    llm_service = get_llm_service()
+
+    if not llm_service.is_available:
+        return {}
+
+    return llm_service.parse_invoice_from_text(ocr_text)
+
+
+
 
 
 def _has_meaningful_fields(fields: Dict[str, Any]) -> bool:
@@ -159,28 +188,60 @@ async def process_invoice(invoice_id: int, db: AsyncSession) -> bool:
         await db.execute(delete(OcrResult).where(OcrResult.invoice_id == invoice_id))
         logger.info(f"Cleared existing processing results for invoice {invoice_id}")
 
-        # Run OCR and LLM vision in PARALLEL using separate thread pools
+        # Determine LLM strategy: vision or text-based
+        # Note: llm_force_vision only affects the actual API call (for models that
+        # support vision but aren't in VISION_MODELS), not the strategy decision.
+        # Text-only models go straight to text LLM, avoiding failed vision attempts.
         loop = asyncio.get_running_loop()
+        llm_service = get_llm_service()
+        llm_has_vision = llm_service.is_available and llm_service.supports_vision()
 
-        # Create tasks for parallel execution
-        # OCR uses CPU-bound pool, LLM uses I/O-bound pool
-        ocr_task = loop.run_in_executor(
-            _ocr_executor, _run_ocr, invoice.file_data, invoice.file_type
-        )
-        llm_task = loop.run_in_executor(
-            _llm_executor, _run_llm_vision, invoice.file_data, invoice.file_type
-        )
+        if llm_has_vision:
+            # Run OCR and LLM vision in PARALLEL for best performance
+            logger.info(f"Running OCR and LLM vision in parallel for invoice {invoice_id}")
+            ocr_task = loop.run_in_executor(
+                _ocr_executor, _run_ocr, invoice.file_data, invoice.file_type
+            )
+            llm_task = loop.run_in_executor(
+                _llm_executor, _run_llm_vision, invoice.file_data, invoice.file_type
+            )
+            ocr_result_data, llm_fields = await asyncio.gather(ocr_task, llm_task)
+            raw_text, confidence, ocr_fields = ocr_result_data
+            has_llm = _has_meaningful_fields(llm_fields)
+            logger.info(f"OCR completed: {len(ocr_fields)} fields, LLM vision: {len(llm_fields)} fields (has_llm={has_llm})")
 
-        # Wait for both tasks to complete
-        logger.info(f"Running OCR and LLM vision in parallel for invoice {invoice_id}")
-        ocr_result_data, llm_fields = await asyncio.gather(ocr_task, llm_task)
+            # Fallback: vision LLM returned empty → try text LLM
+            if not has_llm:
+                logger.info(f"Vision LLM empty, trying text-based LLM for invoice {invoice_id}")
+                llm_fields = await loop.run_in_executor(
+                    _llm_executor, _run_llm_text, raw_text
+                )
+                has_llm = _has_meaningful_fields(llm_fields)
+                logger.info(f"Text LLM completed: {len(llm_fields)} fields (has_llm={has_llm})")
+        elif llm_service.is_available:
+            # Vision not supported — OCR first, then text LLM (sequential, not parallel)
+            logger.info(f"Vision not supported, running OCR then text LLM for invoice {invoice_id}")
+            ocr_result_data = await loop.run_in_executor(
+                _ocr_executor, _run_ocr, invoice.file_data, invoice.file_type
+            )
+            raw_text, confidence, ocr_fields = ocr_result_data
+            logger.info(f"OCR completed: {len(ocr_fields)} fields extracted")
 
-        # Unpack OCR results
-        raw_text, confidence, ocr_fields = ocr_result_data
-        has_llm = _has_meaningful_fields(llm_fields)
-
-        logger.info(f"OCR completed: {len(ocr_fields)} fields extracted")
-        logger.info(f"LLM vision completed: {len(llm_fields)} fields extracted (has_llm={has_llm})")
+            llm_fields = await loop.run_in_executor(
+                _llm_executor, _run_llm_text, raw_text
+            )
+            has_llm = _has_meaningful_fields(llm_fields)
+            logger.info(f"Text LLM completed: {len(llm_fields)} fields (has_llm={has_llm})")
+        else:
+            # No LLM configured — OCR only
+            logger.info(f"Running OCR only for invoice {invoice_id} (no LLM configured)")
+            ocr_result_data = await loop.run_in_executor(
+                _ocr_executor, _run_ocr, invoice.file_data, invoice.file_type
+            )
+            raw_text, confidence, ocr_fields = ocr_result_data
+            has_llm = False
+            llm_fields = {}
+            logger.info(f"OCR completed: {len(ocr_fields)} fields extracted")
 
         # Save OCR result
         ocr_result = OcrResult(
@@ -312,10 +373,17 @@ def _compare_and_resolve(
             source = 'matched'
             needs_review = False
         elif ocr_value and llm_value:
-            # Both have values but they differ - needs manual review
-            final_value = None  # Leave blank for manual review
-            source = 'conflict'
-            needs_review = True
+            # Both have values but they differ
+            if field_name in LLM_PREFERRED_FIELDS:
+                # LLM-preferred fields: trust LLM over OCR (e.g. item_name)
+                final_value = llm_value
+                source = 'llm'
+                needs_review = False
+            else:
+                # Other fields: needs manual review
+                final_value = None  # Leave blank for manual review
+                source = 'conflict'
+                needs_review = True
         elif llm_value and not ocr_value:
             # LLM found something OCR missed - prefer LLM
             final_value = llm_value
@@ -443,6 +511,224 @@ def _update_invoice_from_fields(invoice: Invoice, fields: dict) -> None:
 
     if fields.get('tax_rate'):
         invoice.tax_rate = fields['tax_rate']
+
+
+async def reprocess_ocr_only(invoice_id: int, db: AsyncSession) -> bool:
+    """Re-run OCR only, keep existing LLM results, and re-compare.
+
+    Useful when the OCR result was poor but LLM is already good.
+    """
+    try:
+        query = select(Invoice).where(Invoice.id == invoice_id)
+        result = await db.execute(query)
+        invoice = result.scalar_one_or_none()
+        if not invoice:
+            logger.error(f"Invoice {invoice_id} not found")
+            return False
+
+        # Delete existing OCR result and diffs (keep LLM result)
+        await db.execute(delete(OcrResult).where(OcrResult.invoice_id == invoice_id))
+        await db.execute(delete(ParsingDiff).where(ParsingDiff.invoice_id == invoice_id))
+
+        # Run OCR in thread pool
+        loop = asyncio.get_running_loop()
+        raw_text, confidence, ocr_fields = await loop.run_in_executor(
+            _ocr_executor, _run_ocr, invoice.file_data, invoice.file_type
+        )
+
+        # Get existing LLM result (if any)
+        llm_query = select(LlmResult).where(LlmResult.invoice_id == invoice_id)
+        llm_result_row = await db.execute(llm_query)
+        llm = llm_result_row.scalar_one_or_none()
+        has_llm = llm is not None
+
+        # Build llm_fields dict from existing LLM result
+        llm_fields = {}
+        if has_llm:
+            for f in COMPARABLE_FIELDS:
+                val = getattr(llm, f, None)
+                if val:
+                    llm_fields[f] = val
+
+        # Save new OCR result
+        ocr_result = OcrResult(
+            invoice_id=invoice_id,
+            raw_text=raw_text,
+            invoice_number=ocr_fields.get('invoice_number'),
+            issue_date=ocr_fields.get('issue_date'),
+            buyer_name=ocr_fields.get('buyer_name'),
+            buyer_tax_id=ocr_fields.get('buyer_tax_id'),
+            seller_name=ocr_fields.get('seller_name'),
+            seller_tax_id=ocr_fields.get('seller_tax_id'),
+            item_name=ocr_fields.get('item_name'),
+            total_with_tax=ocr_fields.get('total_with_tax'),
+            amount=ocr_fields.get('amount'),
+            tax_amount=ocr_fields.get('tax_amount'),
+            tax_rate=ocr_fields.get('tax_rate'),
+        )
+        db.add(ocr_result)
+
+        logger.info(f"OCR-only reprocess for invoice {invoice_id}: {len(ocr_fields)} fields")
+
+        # Re-compare
+        final_fields, diffs = _compare_and_resolve(ocr_fields, llm_fields, has_llm)
+
+        # Save diffs
+        for diff in diffs:
+            parsing_diff = ParsingDiff(
+                invoice_id=invoice_id,
+                field_name=diff['field_name'],
+                ocr_value=diff['ocr_value'],
+                llm_value=diff['llm_value'],
+                final_value=diff['final_value'],
+                source=diff['source'],
+                resolved=0 if diff['needs_review'] else 1,
+            )
+            db.add(parsing_diff)
+
+        # Update invoice
+        _reset_extracted_fields(invoice)
+        _update_invoice_from_fields(invoice, final_fields)
+
+        has_conflicts = any(d['needs_review'] for d in diffs)
+        critical_fields = [
+            'invoice_number', 'issue_date', 'total_with_tax',
+            'buyer_name', 'buyer_tax_id', 'seller_name', 'seller_tax_id', 'item_name',
+        ]
+        missing_fields = [f for f in critical_fields if not final_fields.get(f)]
+        needs_review = has_conflicts or bool(missing_fields)
+        invoice.status = InvoiceStatus.REVIEWING if needs_review else InvoiceStatus.CONFIRMED
+
+        await db.commit()
+        logger.info(f"OCR-only reprocess for invoice {invoice_id} complete (needs_review={needs_review})")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed OCR-only reprocess invoice {invoice_id}: {e}")
+        await db.rollback()
+        return False
+
+
+async def reprocess_llm_only(invoice_id: int, db: AsyncSession) -> bool:
+    """Re-run LLM only, keep existing OCR results, and re-compare.
+
+    Useful when LLM was misconfigured or not available on first pass.
+    """
+    try:
+        query = select(Invoice).where(Invoice.id == invoice_id)
+        result = await db.execute(query)
+        invoice = result.scalar_one_or_none()
+        if not invoice:
+            logger.error(f"Invoice {invoice_id} not found")
+            return False
+
+        # Delete existing LLM result and diffs (keep OCR result)
+        await db.execute(delete(LlmResult).where(LlmResult.invoice_id == invoice_id))
+        await db.execute(delete(ParsingDiff).where(ParsingDiff.invoice_id == invoice_id))
+
+        # Get existing OCR result
+        ocr_query = select(OcrResult).where(OcrResult.invoice_id == invoice_id)
+        ocr_result_row = await db.execute(ocr_query)
+        ocr = ocr_result_row.scalar_one_or_none()
+
+        # Build ocr_fields dict from existing OCR result
+        ocr_fields = {}
+        if ocr:
+            for f in COMPARABLE_FIELDS:
+                val = getattr(ocr, f, None)
+                if val:
+                    ocr_fields[f] = val
+
+        # Run LLM in thread pool — smart strategy: supports_vision() decides
+        loop = asyncio.get_running_loop()
+        llm_service = get_llm_service()
+        llm_has_vision = llm_service.is_available and llm_service.supports_vision()
+
+        if llm_has_vision:
+            logger.info(f"Running LLM vision for invoice {invoice_id}")
+            llm_fields = await loop.run_in_executor(
+                _llm_executor, _run_llm_vision, invoice.file_data, invoice.file_type
+            )
+            has_llm = _has_meaningful_fields(llm_fields)
+
+            # Fallback: vision LLM empty → try text LLM
+            if not has_llm and ocr:
+                logger.info(f"Vision LLM empty in reprocess, trying text-based LLM for invoice {invoice_id}")
+                llm_fields = await loop.run_in_executor(
+                    _llm_executor, _run_llm_text, ocr.raw_text
+                )
+                has_llm = _has_meaningful_fields(llm_fields)
+                logger.info(f"Text LLM in reprocess: {len(llm_fields)} fields (has_llm={has_llm})")
+        elif llm_service.is_available and ocr:
+            # Vision not supported — use text LLM directly
+            logger.info(f"Vision not supported, running text LLM for invoice {invoice_id}")
+            llm_fields = await loop.run_in_executor(
+                _llm_executor, _run_llm_text, ocr.raw_text
+            )
+            has_llm = _has_meaningful_fields(llm_fields)
+            logger.info(f"Text LLM in reprocess: {len(llm_fields)} fields (has_llm={has_llm})")
+        else:
+            logger.warning(f"No LLM available or no OCR data for invoice {invoice_id}")
+            llm_fields = {}
+            has_llm = False
+
+        # Save LLM result if available
+        if has_llm:
+            llm_result = LlmResult(
+                invoice_id=invoice_id,
+                invoice_number=llm_fields.get('invoice_number'),
+                issue_date=llm_fields.get('issue_date'),
+                buyer_name=llm_fields.get('buyer_name'),
+                buyer_tax_id=llm_fields.get('buyer_tax_id'),
+                seller_name=llm_fields.get('seller_name'),
+                seller_tax_id=llm_fields.get('seller_tax_id'),
+                item_name=llm_fields.get('item_name'),
+                total_with_tax=llm_fields.get('total_with_tax'),
+                amount=llm_fields.get('amount'),
+                tax_amount=llm_fields.get('tax_amount'),
+                tax_rate=llm_fields.get('tax_rate'),
+            )
+            db.add(llm_result)
+        else:
+            logger.info(f"LLM-only reprocess for invoice {invoice_id}: LLM returned no meaningful fields")
+
+        # Re-compare
+        final_fields, diffs = _compare_and_resolve(ocr_fields, llm_fields, has_llm)
+
+        # Save diffs
+        for diff in diffs:
+            parsing_diff = ParsingDiff(
+                invoice_id=invoice_id,
+                field_name=diff['field_name'],
+                ocr_value=diff['ocr_value'],
+                llm_value=diff['llm_value'],
+                final_value=diff['final_value'],
+                source=diff['source'],
+                resolved=0 if diff['needs_review'] else 1,
+            )
+            db.add(parsing_diff)
+
+        # Update invoice
+        _reset_extracted_fields(invoice)
+        _update_invoice_from_fields(invoice, final_fields)
+
+        has_conflicts = any(d['needs_review'] for d in diffs)
+        critical_fields = [
+            'invoice_number', 'issue_date', 'total_with_tax',
+            'buyer_name', 'buyer_tax_id', 'seller_name', 'seller_tax_id', 'item_name',
+        ]
+        missing_fields = [f for f in critical_fields if not final_fields.get(f)]
+        needs_review = has_conflicts or bool(missing_fields)
+        invoice.status = InvoiceStatus.REVIEWING if needs_review else InvoiceStatus.CONFIRMED
+
+        await db.commit()
+        logger.info(f"LLM-only reprocess for invoice {invoice_id} complete (needs_review={needs_review})")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed LLM-only reprocess invoice {invoice_id}: {e}")
+        await db.rollback()
+        return False
 
 
 def check_llm_available() -> bool:

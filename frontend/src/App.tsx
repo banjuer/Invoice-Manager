@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import UploadPage from './pages/UploadPage';
 import InvoiceListPage from './pages/InvoiceListPage';
 import InvoiceDetailPage from './pages/InvoiceDetailPage';
@@ -8,9 +8,16 @@ import { MainLayout } from './components/layout';
 import { getLLMStatus } from './services/api';
 
 function AppContent() {
+  const location = useLocation();
   const [llmConfigOpen, setLlmConfigOpen] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [showLlmPromo, setShowLlmPromo] = useState(false);
+
+  // Standalone mode: opened via /invoices/number/:number — no sidebar
+  const isStandaloneDetail = useMemo(
+    () => location.pathname.startsWith('/invoices/number/'),
+    [location.pathname]
+  );
 
   // Check LLM status on app load
   useEffect(() => {
@@ -37,6 +44,35 @@ function AppContent() {
     setShowLlmPromo(false);
   };
 
+  const routes = (
+    <Routes>
+      <Route path="/" element={<InvoiceListPage />} />
+      <Route path="/upload" element={<UploadPage />} />
+      <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+      <Route path="/invoices/number/:number" element={<InvoiceDetailPage />} />
+    </Routes>
+  );
+
+  const llmModal = (
+    <LLMConfigModal
+      open={llmConfigOpen}
+      onClose={() => setLlmConfigOpen(false)}
+      onConfigured={handleLLMConfigured}
+    />
+  );
+
+  // Standalone detail: render without sidebar/header
+  if (isStandaloneDetail) {
+    return (
+      <>
+        <main style={{ minHeight: '100vh', background: '#f5f5f5' }}>
+          {routes}
+        </main>
+        {llmModal}
+      </>
+    );
+  }
+
   return (
     <MainLayout
       llmConfigured={llmConfigured}
@@ -44,17 +80,8 @@ function AppContent() {
       onOpenLLMConfig={() => setLlmConfigOpen(true)}
       onCloseLLMPromo={() => setShowLlmPromo(false)}
     >
-      <Routes>
-        <Route path="/" element={<InvoiceListPage />} />
-        <Route path="/upload" element={<UploadPage />} />
-        <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
-      </Routes>
-
-      <LLMConfigModal
-        open={llmConfigOpen}
-        onClose={() => setLlmConfigOpen(false)}
-        onConfigured={handleLLMConfigured}
-      />
+      {routes}
+      {llmModal}
     </MainLayout>
   );
 }

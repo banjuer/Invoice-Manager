@@ -91,6 +91,7 @@ export interface InvoiceDetail extends Invoice {
   ocr_result: OcrResult | null;
   llm_result: LlmResult | null;
   parsing_diffs: ParsingDiff[];
+  field_sources: Record<string, string | null>;
 }
 
 export interface InvoiceListResponse {

@@ -192,7 +192,10 @@ async def configure_llm(
         )
 
     if not request.api_key:
-        raise HTTPException(status_code=400, detail="API密钥不能为空")
+        # If the provider is already configured, keep the existing key
+        from app.services.llm_service import get_llm_service
+        if provider not in get_llm_service().get_configured_providers():
+            raise HTTPException(status_code=400, detail="API密钥不能为空")
 
     try:
         # Build env updates for both os.environ and .env file
@@ -209,7 +212,8 @@ async def configure_llm(
         }
 
         key_name, model_name, base_url_name = provider_config[provider]
-        env_updates[key_name] = request.api_key
+        if request.api_key:
+            env_updates[key_name] = request.api_key
         if request.model:
             env_updates[model_name] = request.model
         if request.base_url and base_url_name:
