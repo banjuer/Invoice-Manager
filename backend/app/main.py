@@ -1,3 +1,8 @@
+import logging
+import os
+import sys
+from logging.handlers import RotatingFileHandler
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -6,6 +11,29 @@ from slowapi.errors import RateLimitExceeded
 from app.config import get_settings
 from app.routers import health, invoices, settings as settings_router
 from app.rate_limit import limiter
+
+# ---------- Logging ----------
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+_file_handler = RotatingFileHandler(
+    os.path.join(LOG_DIR, "backend.log"),
+    maxBytes=10 * 1024 * 1024,  # 10MB per file
+    backupCount=5,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+
+_console_handler = logging.StreamHandler(sys.stdout)
+_console_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 
 settings = get_settings()
 

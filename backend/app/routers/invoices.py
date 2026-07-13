@@ -242,12 +242,16 @@ async def list_invoices(
     owner: Optional[str] = Query(None, description="归属人筛选"),
     start_date: Optional[str] = Query(None, description="开始日期"),
     end_date: Optional[str] = Query(None, description="结束日期"),
+    invoice_ids: Optional[str] = Query(None, description="发票ID列表，逗号分隔（如 1,2,3）"),
     db: AsyncSession = Depends(get_db)
 ):
-    """获取发票列表"""
+    """获取发票列表（支持ID批量查询）"""
     query = select(Invoice)
 
     # Apply filters
+    ids = _parse_invoice_ids(invoice_ids)
+    if ids:
+        query = query.where(Invoice.id.in_(ids))
     if status:
         query = query.where(Invoice.status == status)
     if owner:
