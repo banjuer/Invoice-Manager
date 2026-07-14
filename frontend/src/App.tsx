@@ -13,9 +13,9 @@ function AppContent() {
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [showLlmPromo, setShowLlmPromo] = useState(false);
 
-  // Standalone mode: opened via /invoices/number/:number — no sidebar
+  // Standalone mode: opened via /invoices/:id or /invoices/number/:number — no sidebar
   const isStandaloneDetail = useMemo(
-    () => location.pathname.startsWith('/invoices/number/'),
+    () => /^\/invoices(\/number)?\/[^/]+$/.test(location.pathname),
     [location.pathname]
   );
 
