@@ -35,6 +35,8 @@ _console_handler.setFormatter(logging.Formatter(
 
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
 
 app = FastAPI(
