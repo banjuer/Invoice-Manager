@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     ocr_max_workers: int = 8   # CPU-bound: ~2x typical core count
     llm_max_workers: int = 15  # I/O-bound: limited by API rate limits
 
+    # Rate limiting (disabled by default for private/internal deployments)
+    enable_rate_limit: bool = False
+
     # App
     debug: bool = True
 

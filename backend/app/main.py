@@ -43,6 +43,13 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Enable rate limiter if configured (off by default for private deployment)
+if settings.enable_rate_limit:
+    limiter._enabled = True
+    logger.info("Rate limiting enabled")
+else:
+    logger.info("Rate limiting disabled (private/internal deployment mode)")
+
 # Add rate limiter to app state
 app.state.limiter = limiter
 
