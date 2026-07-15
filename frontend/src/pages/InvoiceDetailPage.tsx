@@ -261,12 +261,7 @@ function InvoiceDetailPage() {
       {/* Page Header */}
       <div className={styles.pageHeader}>
         <div className={styles.headerLeft}>
-          {!number && (
-            <button className={styles.backButton} onClick={() => navigate('/')}>
-              <ArrowLeftOutlined />
-              返回列表
-            </button>
-          )}
+          {/* Back button removed: all detail views are now standalone (no sidebar) */}
           <div className={styles.headerTitle}>
             <div className={styles.invoiceNumber}>
               {invoice.invoice_number || '发票详情'}
