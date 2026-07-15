@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import {
   Descriptions,
   Button,
@@ -13,7 +13,6 @@ import {
   Modal,
 } from 'antd';
 import {
-  ArrowLeftOutlined,
   EditOutlined,
   SaveOutlined,
   SyncOutlined,
@@ -49,7 +48,6 @@ const fieldLabels: Record<string, string> = {
 
 function InvoiceDetailPage() {
   const { id, number } = useParams<{ id?: string; number?: string }>();
-  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [reprocessing, setReprocessing] = useState(false);
   const [reprocessingOcr, setReprocessingOcr] = useState(false);
